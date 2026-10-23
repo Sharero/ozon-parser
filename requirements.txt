@@ -1,0 +1,6 @@
+playwright>=1.49,<2
+python-dotenv>=1.0,<2
+curl_cffi>=0.7,<1
+selenium>=4.25,<5
+selenium-stealth>=1.0.6,<2
+aiohttp>=3.11,<4

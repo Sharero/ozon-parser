@@ -1,0 +1,19 @@
+[Unit]
+Description=Ozon price monitor and Telegram control bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace these paths and User with the server account and checkout directory.
+User=ozon
+WorkingDirectory=/opt/ozon-parser
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/xvfb-run -a -s "-screen 0 1440x1000x24" /opt/ozon-parser/.venv/bin/python /opt/ozon-parser/main.py
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=120
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

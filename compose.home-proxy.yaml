@@ -1,0 +1,7 @@
+# Linux only: reach the SSH SOCKS listener bound to server loopback.
+# docker compose -f compose.yaml -f compose.home-proxy.yaml up -d --build
+services:
+  monitor:
+    network_mode: host
+    environment:
+      OZON_PROXY_URL: socks5h://127.0.0.1:1080

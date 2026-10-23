@@ -1,0 +1,12 @@
+[Unit]
+Description=Home egress for Ozon via reverse SSH SOCKS
+
+[Service]
+Type=simple
+# Run on the home Arch Linux machine; authenticate once interactively first.
+ExecStart=/usr/bin/ssh -NT -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 127.0.0.1:1080 root@185.236.20.26
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

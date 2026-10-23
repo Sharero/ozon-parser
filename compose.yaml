@@ -1,0 +1,27 @@
+services:
+  monitor:
+    build:
+      context: .
+      args:
+        APP_UID: ${PUID:-1000}
+        APP_GID: ${PGID:-1000}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      EXCLUDED_BOOKS_FILE: /app/excluded_books.txt
+      HEADLESS: "false"
+      CHROMIUM_NO_SANDBOX: "true"
+      CHROMIUM_EXECUTABLE_PATH: /usr/bin/chromium
+      CHROMEDRIVER_PATH: /usr/bin/chromedriver
+      TZ: ${TZ:-Asia/Novosibirsk}
+    volumes:
+      - ./data:/app/data
+      - ./excluded_books.txt:/app/excluded_books.txt:ro
+    shm_size: "1gb"
+    stop_grace_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,17 @@
+.venv
+.git
+.idea
+.env
+.env.*
+!.env.example
+data
+backups
+__pycache__
+**/__pycache__
+*.pyc
+excluded_books.txt
+
+.aws
+.codex
+.agents
+.ssh

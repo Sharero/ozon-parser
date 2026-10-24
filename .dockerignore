@@ -15,3 +15,6 @@ excluded_books.txt
 .codex
 .agents
 .ssh
+vpn
+**/*.ovpn
+*.ovpn

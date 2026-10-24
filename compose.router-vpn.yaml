@@ -1,0 +1,34 @@
+# Use with compose.yaml only, not compose.home-proxy.yaml (host networking).
+# The router profile must exist at ./vpn/home.ovpn before starting.
+services:
+  router-vpn:
+    image: qmcgaw/gluetun:v3.41
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./vpn/home.ovpn:/gluetun/custom.conf:ro
+    environment:
+      VPN_SERVICE_PROVIDER: custom
+      VPN_TYPE: openvpn
+      OPENVPN_CUSTOM_CONFIG: /gluetun/custom.conf
+      HTTPPROXY: "on"
+      HTTPPROXY_STEALTH: "on"
+      HTTPPROXY_LOG: "off"
+      HTTPPROXY_LISTENING_ADDRESS: ":8888"
+      FIREWALL_INPUT_PORTS: "8888"
+      TZ: ${TZ:-Asia/Novosibirsk}
+    # No host ports and no host networking: VPN routes stay in this container.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  monitor:
+    environment:
+      OZON_PROXY_URL: http://router-vpn:8888
+    depends_on:
+      router-vpn:
+        condition: service_healthy

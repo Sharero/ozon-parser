@@ -14,6 +14,8 @@ services:
       VPN_SERVICE_PROVIDER: custom
       VPN_TYPE: openvpn
       OPENVPN_CUSTOM_CONFIG: /gluetun/custom.conf
+      # Archer's exported profile uses AES-128-CBC without cipher negotiation.
+      OPENVPN_FLAGS: "--data-ciphers-fallback AES-128-CBC"
       HTTPPROXY: "on"
       HTTPPROXY_STEALTH: "on"
       HTTPPROXY_LOG: "off"

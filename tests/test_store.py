@@ -21,9 +21,12 @@ class PersistentSettings(unittest.TestCase):
                         series TEXT DEFAULT '',author TEXT DEFAULT '',hardcover INTEGER DEFAULT 1,enabled INTEGER DEFAULT 1);
                     INSERT INTO targets VALUES(1,'book','https://www.ozon.ru/product/book-123/','Оно','','',0,1);
                     INSERT INTO targets VALUES(2,'series','https://www.ozon.ru/series/test-12/','Серия','Серия','',1,1);
+                    CREATE TABLE target_offers(target_id INTEGER,sku TEXT,eligible INTEGER,notified_price TEXT,
+                        price_revision INTEGER DEFAULT 0,checked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY(target_id,sku));
+                    INSERT INTO target_offers(target_id,sku,eligible,notified_price,price_revision) VALUES(1,'123',1,'399',7);
                 ''')
             migrated = Store(path)
-            migrated.record(1, sample(), True, 7, notified=True)
             for target in migrated.targets():
                 self.assertEqual(target.price_limit, Decimal('425'))
                 self.assertEqual(target.price_revision, 7)
@@ -33,6 +36,20 @@ class PersistentSettings(unittest.TestCase):
             restarted = Store(path)
             self.assertEqual(restarted.snapshot(1)[1:3], (Decimal('300'), 8))
             self.assertEqual(restarted.snapshot(2)[1:3], (Decimal('425'), 7))
+
+    def test_default_price_only_applies_to_future_targets(self):
+        self.store.set_price('800')
+        target = self.store.add_target('book', sample().url)
+        self.assertEqual(target.price_limit, 800)
+        self.assertEqual(self.store.snapshot(1)[1], 550)
+        self.store.set_price('300')
+        duplicate = self.store.add_target('book', sample().url)
+        self.assertEqual(duplicate.price_limit, 800)
+
+    def test_pause_cancels_queued_target_check(self):
+        self.store.request_check(1)
+        self.store.enable(1, False)
+        self.assertEqual(self.store.take_checks(), [])
 
     def test_target_price_changes_do_not_touch_other_target_history(self):
         second = self.store.add_target('book', sample().url, limit='700')

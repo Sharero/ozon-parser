@@ -2,6 +2,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 from ozon_monitor.network import proxy_url
@@ -56,9 +57,11 @@ class Scheduling(unittest.TestCase):
             else:
                 self.stop.set()
         monitor.return_value.run_all.side_effect = check
-        with patch('ozon_monitor.service.BotPoller.run'):
+        with patch('ozon_monitor.service.BotPoller.run'), patch('ozon_monitor.service.datetime') as clock:
+            clock.now.return_value = datetime(2026, 10, 24, 10, 0)
             run_service(self.store, Mock(), self.path, 12345, self.stop, interval=3600)
         self.assertEqual(deadlines[0], deadlines[1])
+        self.assertEqual(clock.now.call_count, 1)
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

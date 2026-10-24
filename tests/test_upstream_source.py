@@ -2,7 +2,7 @@ import json
 import unittest
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from ozon_monitor.upstream_source import UpstreamOzon, search_page, product_url
 
 
@@ -31,6 +31,24 @@ def book_payload(price='399,99 ₽', binding='Твердый переплет', 
 
 
 class JsonSeries(unittest.TestCase):
+    def test_saved_cookies_with_alternate_json_layout_fall_back_to_confirmed_dom(self):
+        source, transport = self.source()
+        transport.mode = 'json'
+        transport.page.return_value = payload(**{'tileGridDesktop-1': {'items': []}})
+        dom = Mock()
+        dom.discover.return_value = ['https://www.ozon.ru/product/book-123/']
+        with patch.object(source, '_dom_source', return_value=dom):
+            self.assertEqual(source.discover(), dom.discover.return_value)
+        transport.select_dom.assert_called_once()
+        dom.discover.assert_called_once()
+
+    def test_unconfirmed_html_fallback_fails_instead_of_reporting_no_books(self):
+        source, transport = self.source()
+        transport.page.return_value = payload(**{'header-1': {}})
+        transport.select_dom.side_effect = RuntimeError('HTML недоступен')
+        with self.assertRaisesRegex(RuntimeError, 'HTML недоступен'):
+            source.discover()
+
     def source(self):
         transport = Mock()
         return UpstreamOzon(Path('/tmp/monitor'), delay=0, transport=transport), transport

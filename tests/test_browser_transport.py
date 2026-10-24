@@ -26,6 +26,23 @@ class BrowserTransport(unittest.TestCase):
         self.client.close()
         self.tmp.cleanup()
 
+    def test_select_dom_opens_browser_even_when_saved_cookies_are_fresh(self):
+        def refresh(**kwargs):
+            self.assertTrue(kwargs['retain_browser'])
+            self.client.driver = self.driver
+        self.dom.return_value.confirm_search.side_effect = None
+        with patch.object(self.client, 'refresh', side_effect=refresh) as start:
+            self.client.select_dom('https://www.ozon.ru/series/example/')
+        start.assert_called_once_with(retain_browser=True)
+        self.dom.return_value.confirm_search.assert_called_once()
+        self.assertEqual(self.client.mode, 'dom')
+
+    def test_select_dom_requires_confirmation(self):
+        self.client.driver = self.driver
+        with self.assertRaisesRegex(RuntimeError, 'HTML выдача недоступна'):
+            self.client.select_dom('https://www.ozon.ru/series/example/')
+        self.assertEqual(self.client.mode, 'json')
+
     def test_age_gate_in_dom_probe_preserves_error_type(self):
         self.dom.return_value.confirm_search.side_effect = AgeConfirmationRequired('Подтвердите возраст')
         with patch.object(self.client, '_make_request', return_value=(403, 'blocked')), \

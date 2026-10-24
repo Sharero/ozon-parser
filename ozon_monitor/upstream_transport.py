@@ -215,6 +215,18 @@ class UpstreamTransport(OzonClient):
                 self.mode = 'json'
                 driver.quit()
 
+    def select_dom(self, url):
+        """Confirm a real page when HTTP 200 contains an unsupported JSON layout."""
+        if self.driver is None:
+            self.refresh(retain_browser=True)
+        dom = SeleniumDOMOzon(self.driver, delay=0)
+        if self.probe_kind == 'book':
+            dom.confirm_product(url)
+        else:
+            dom.confirm_search(url)
+        self.mode = 'dom'
+        log.info('JSON не содержит ожидаемой выдачи; подтверждён HTML-режим Selenium')
+
     def page(self, url: str) -> dict:
         if self.mode == 'dom':
             raise DOMModeSelected()

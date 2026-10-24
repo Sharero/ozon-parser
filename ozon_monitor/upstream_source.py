@@ -183,6 +183,10 @@ class UpstreamOzon:
             seen = set()
             for _ in range(self.max_pages):
                 payload = self.fetch(page_url(base_url, number))
+                if not any(key.startswith('searchResultsV2-') for key in states(payload)):
+                    log.info('JSON поиска без searchResultsV2; проверяю обычную HTML-выдачу')
+                    self.transport.select_dom(base_url)
+                    raise DOMModeSelected()
                 links, next_page = search_page(payload, number)
                 if links and not links.keys() - seen:
                     raise RuntimeError('JSON Ozon повторил страницу поиска; обход не завершён')

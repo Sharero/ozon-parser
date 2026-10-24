@@ -2,6 +2,7 @@ from decimal import Decimal
 from pathlib import Path
 import tempfile
 import unittest
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from ozon_monitor.store import Store
 from ozon_monitor.state import State
@@ -9,6 +10,49 @@ from test_monitor import sample
 
 
 class PersistentSettings(unittest.TestCase):
+    def test_legacy_global_price_is_copied_to_every_target_once_with_history(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'old.sqlite3'
+            with sqlite3.connect(path) as db:
+                db.executescript('''
+                    CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                    INSERT INTO settings VALUES ('price_limit','425'),('price_revision','7'),('initialized','1');
+                    CREATE TABLE targets(id INTEGER PRIMARY KEY,kind TEXT,url TEXT UNIQUE,name TEXT,
+                        series TEXT DEFAULT '',author TEXT DEFAULT '',hardcover INTEGER DEFAULT 1,enabled INTEGER DEFAULT 1);
+                    INSERT INTO targets VALUES(1,'book','https://www.ozon.ru/product/book-123/','Оно','','',0,1);
+                    INSERT INTO targets VALUES(2,'series','https://www.ozon.ru/series/test-12/','Серия','Серия','',1,1);
+                ''')
+            migrated = Store(path)
+            migrated.record(1, sample(), True, 7, notified=True)
+            for target in migrated.targets():
+                self.assertEqual(target.price_limit, Decimal('425'))
+                self.assertEqual(target.price_revision, 7)
+            self.assertFalse(migrated.needs_notification(1, sample(), True, 7))
+            migrated.set_price('300', 1)
+            migrated.set_price('600')
+            restarted = Store(path)
+            self.assertEqual(restarted.snapshot(1)[1:3], (Decimal('300'), 8))
+            self.assertEqual(restarted.snapshot(2)[1:3], (Decimal('425'), 7))
+
+    def test_target_price_changes_do_not_touch_other_target_history(self):
+        second = self.store.add_target('book', sample().url, limit='700')
+        self.store.record(second.id, sample(), True, 0, notified=True)
+        self.store.set_price('350', 1)
+        self.assertEqual(self.store.snapshot(1)[1:3], (Decimal('350'), 1))
+        self.assertEqual(self.store.snapshot(second.id)[1:3], (Decimal('700'), 0))
+        self.assertFalse(self.store.needs_notification(second.id, sample(), True, 0))
+        self.store.set_price('350', 1)
+        self.assertEqual(self.store.snapshot(1)[2], 1)
+
+    def test_check_requests_are_coalesced_and_persisted(self):
+        self.store.request_check(1)
+        self.store.request_check(1)
+        self.assertEqual(Store(self.path).take_checks(), [1])
+        self.assertFalse(self.store.has_checks())
+        self.store.request_check(1)
+        self.store.request_check()
+        self.store.request_check(2)
+        self.assertEqual(self.store.take_checks(), [0])
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'state.sqlite3'
@@ -33,7 +77,7 @@ class PersistentSettings(unittest.TestCase):
         book = sample()
         self.store.record(1, book, True, 0, notified=True)
         self.assertFalse(self.store.needs_notification(1, book, True, 0))
-        self.store.set_price('400')
+        self.store.set_price('400', 1)
         _, _, revision, _ = self.store.snapshot(1)
         self.assertTrue(self.store.needs_notification(1, book, True, revision))
         self.store.record(1, book, True, revision, notified=False)

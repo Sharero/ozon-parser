@@ -27,9 +27,12 @@ def watch_url(value: str, kind: str) -> str:
         if not re.fullmatch(r'/product/(?:[^/]*-)?\d+/?', parts.path):
             raise ValueError('Нужна полная ссылка /product/… на конкретную книгу, не короткая /t/ ссылка')
         return urlunsplit(('https', 'www.ozon.ru', parts.path.rstrip('/') + '/', '', ''))
-    if kind != 'series' or not parts.path.startswith('/series/'):
-        raise ValueError('Для серии нужна ссылка Ozon с путём /series/…')
-    query = [(k, v) for k, v in parse_qsl(parts.query) if k not in ('page', 'sorting', 'covertype') and not k.startswith('utm_')]
+    parameters = parse_qsl(parts.query)
+    search_path = parts.path.rstrip('/') == '/search' or parts.path.startswith('/category/')
+    search_text = any(key == 'text' and value.strip() for key, value in parameters)
+    if kind != 'series' or not (parts.path.startswith('/series/') or (search_path and search_text)):
+        raise ValueError('Для серии нужна ссылка /series/… либо /search/ или /category/… с поисковым запросом text')
+    query = [(k, v) for k, v in parameters if k not in ('page', 'sorting', 'covertype') and not k.startswith('utm_')]
     query.extend([('covertype', '537'), ('sorting', 'price')])
     return urlunsplit(('https', 'www.ozon.ru', parts.path, urlencode(query), ''))
 
@@ -44,6 +47,8 @@ class Target:
     author: str = ''
     hardcover: bool = True
     enabled: bool = True
+    price_limit: Decimal = Decimal('550')
+    price_revision: int = 0
 
     @property
     def sorted_by_price(self):

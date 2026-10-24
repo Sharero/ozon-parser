@@ -11,6 +11,35 @@ from test_monitor import sample
 
 
 class RuntimeMonitor(unittest.TestCase):
+    def test_each_target_uses_own_price_and_cutoff(self):
+        direct = self.store.add_target('book', sample().url, limit='700')
+        self.store.set_price('400', 1)
+        first = self.source([sample('450'), sample('399')])
+        second = self.source([sample('650')])
+        self.factory.side_effect = [first, second]
+        self.assertTrue(self.monitor.run_all())
+        first.book.assert_called_once()
+        second.book.assert_called_once()
+        self.assertEqual(self.telegram.send.call_args.args[0].card_price, 650)
+        self.assertIn('порог <400 ₽', self.store.get('last_summary'))
+        self.assertIn('порог <700 ₽', self.store.get('last_summary'))
+
+    def test_manual_selection_does_not_open_other_targets(self):
+        direct = self.store.add_target('book', sample().url, limit='500')
+        self.factory.return_value = self.source([sample('450')])
+        self.assertTrue(self.monitor.run_all(target_ids=[direct.id]))
+        self.factory.assert_called_once()
+        self.assertEqual(self.factory.call_args.args[1].id, direct.id)
+
+    def test_price_change_realerts_only_changed_target(self):
+        direct = self.store.add_target('book', sample().url)
+        for target_id in (1, direct.id):
+            self.store.record(target_id, sample('399'), True, 0, notified=True)
+        self.store.set_price('450', direct.id)
+        self.factory.side_effect = [self.source([sample('399')]), self.source([sample('399')])]
+        self.assertTrue(self.monitor.run_all())
+        self.telegram.send.assert_called_once()
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.directory = Path(self.tmp.name)
@@ -64,13 +93,13 @@ class RuntimeMonitor(unittest.TestCase):
     def test_new_price_and_exclusions_apply_during_active_cycle(self):
         source = self.source([sample('450')])
         def book(_):
-            self.store.set_price('400')
+            self.store.set_price('400', 1)
             return sample('450')
         source.book.side_effect = book
         self.factory.return_value = source
         self.assertTrue(self.monitor.run_all())
         self.telegram.send.assert_not_called()
-        self.assertIn('Порог: строго ниже 400', self.store.get('last_summary'))
+        self.assertIn('порог <400 ₽', self.store.get('last_summary'))
 
     def test_new_exclusion_is_read_after_card_finishes_loading(self):
         source = self.source([sample('399')])

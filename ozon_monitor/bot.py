@@ -9,7 +9,8 @@ MENU = {'keyboard': [['📋 Мониторинг', '💰 Порог'], ['➕ С�
                      ['🚫 Исключить', '📚 Исключения'], ['🔄 Проверить', 'ℹ️ Статус']],
         'resize_keyboard': True}
 COMMANDS = [
-    ('start', 'Меню и помощь'), ('list', 'Серии и книги'), ('price', 'Порог цены: /price 400'),
+    ('start', 'Меню и помощь'), ('list', 'Серии и книги'), ('price', 'Порог цели: /price ID сумма'),
+    ('defaultprice', 'Начальный порог новых целей'),
     ('addseries', 'Добавить: URL | точная серия | автор (необязательно)'),
     ('addbook', 'Добавить: URL | название (необязательно)'),
     ('exclude', 'Исключить название книги'), ('include', 'Вернуть название в поиск'),
@@ -19,16 +20,17 @@ COMMANDS = [
     ('reports', 'Часовые отчёты: /reports on или off'), ('cancel', 'Отменить ввод'),
 ]
 HELP = '''Управление мониторингом Ozon:
-/price 400 — общий порог (цена строго ниже)
+/price ID сумма — отдельный порог серии или книги, например /price 2 400 (строго ниже)
+/defaultprice 550 — начальный порог только для новых целей
 /list — список мониторинга с ID
-/addseries URL | Название серии | Автор — добавить серию; автор необязателен. Серия по умолчанию только в твёрдом переплёте, сортировка по цене.
-/addbook URL | Название — отслеживать конкретную книгу; название необязательно, переплёт соответствует выбранной карточке.
+/addseries URL | Название серии | Автор | Порог — добавить серию; автор и порог необязательны. Подходит ссылка на серию или поиск Ozon. Только твёрдый переплёт, сортировка по цене.
+/addbook URL | Название | Порог — отслеживать конкретную книгу; название и порог необязательны, переплёт соответствует карточке.
 /exclude Название — исключить купленную книгу
 /include Название — убрать исключение
 /exclusions — все исключения
 /pause ID, /resume ID — остановить/возобновить цель
 /remove ID — отключить цель
-/check — проверить сейчас
+/check [ID] — проверить все цели или одну цель сейчас
 /status — состояние и результат последней проверки
 /reports on или off — часовые отчёты
 /cancel — отменить ввод
@@ -41,6 +43,18 @@ class BotController:
 
     def reply(self, text):
         self.telegram.send_text(text, chat_id=self.admin_id, reply_markup=MENU)
+
+    def request_check(self, target_id=None):
+        self.store.request_check(target_id)
+        self.wake.set()
+
+    def get_target(self, value):
+        if not value.isdecimal() or int(value) <= 0:
+            raise ValueError('Укажите ID из /list')
+        target = next((t for t in self.store.targets() if t.id == int(value)), None)
+        if target is None:
+            raise ValueError('Такого ID мониторинга нет')
+        return target
 
     def handle(self, update):
         message = update.get('message', {})
@@ -74,21 +88,34 @@ class BotController:
         if command in ('/start', '/help'):
             return HELP
         prompts = {
-            '/price': f"Сейчас порог {self.store.get('price_limit')} ₽. Отправьте новый порог, например 400. /cancel — отмена.",
-            '/limit': f"Сейчас порог {self.store.get('price_limit')} ₽. Отправьте новый порог, например 400.",
+            '/price': 'Отправьте ID и порог, например 2 400. ID и текущие пороги: /list. /cancel — отмена.',
+            '/limit': 'Отправьте ID и порог, например 2 400. ID и текущие пороги: /list.',
+            '/defaultprice': f"Начальный порог новых целей: {self.store.get('price_limit')} ₽. Отправьте сумму. Существующие цели не изменятся.",
             '/exclude': 'Отправьте полное название купленной книги. /cancel — отмена.',
             '/include': 'Отправьте название, которое нужно убрать из исключений.',
-            '/addseries': 'Отправьте: ссылка на серию Ozon | точное название серии | автор (необязательно).',
-            '/addbook': 'Отправьте полную ссылку на книгу Ozon. Можно добавить | название.',
+            '/addseries': 'Отправьте: ссылка на серию или поиск Ozon | точное название серии | автор | порог. Автор и порог необязательны; для пропуска автора оставьте пустое поле между |.',
+            '/addbook': 'Отправьте полную ссылку на книгу Ozon. Можно добавить | название | порог.',
         }
         if command in prompts and not argument:
             self.store.set('pending_action', command)
             return prompts[command]
         if command in ('/price', '/limit'):
+            fields = argument.split()
+            if len(fields) != 2:
+                raise ValueError('У каждой цели свой порог. Используйте /price ID сумма, например /price 2 400. ID: /list. Начальный порог новых целей: /defaultprice 400.')
+            target = self.get_target(fields[0])
+            amount = self.store.set_price(fields[1], target.id)
+            self.store.set('pending_action', '')
+            if target.price_limit == amount:
+                return f'ID {target.id}: порог уже <{amount} ₽. Новая проверка не нужна.'
+            if target.enabled:
+                self.request_check(target.id)
+            action = 'Проверка этой цели запрошена после текущего обхода.' if target.enabled else 'Цель на паузе; проверка начнётся после /resume.'
+            return f'ID {target.id}, {target.name}: порог строго ниже {amount} ₽ с Ozon Картой. {action}'
+        if command == '/defaultprice':
             amount = self.store.set_price(argument)
             self.store.set('pending_action', '')
-            self.wake.set()
-            return f'Порог изменён: строго ниже {amount} ₽ с Ozon Картой. Проверка запрошена. Уже начатая обработка карточки может завершиться перед применением новых настроек.'
+            return f'Начальный порог новых целей: <{amount} ₽. Пороги существующих целей не изменены; проверка не запускается.'
         if command == '/exclude':
             self.store.exclude(argument)
             self.store.set('pending_action', '')
@@ -96,39 +123,54 @@ class BotController:
         if command == '/include':
             changed = self.store.include(argument)
             self.store.set('pending_action', '')
-            return f'Книга возвращена в мониторинг: {argument}' if changed else 'Такого названия в исключениях нет.'
+            if changed:
+                self.request_check()
+            return f'Книга возвращена в мониторинг: {argument}. Проверка включённых целей запрошена.' if changed else 'Такого названия в исключениях нет.'
         if command == '/exclusions':
             titles = self.store.exclusions().values()
             return 'Исключённые книги:\n' + '\n'.join(titles) if titles else 'Исключений нет.'
         if command in ('/addseries', '/addbook'):
             parts = [part.strip() for part in argument.split('|')]
-            if len(parts) > 3 or not parts[0]:
-                raise ValueError('Формат: URL | название | автор (только для серии)')
+            if len(parts) > 4 or not parts[0]:
+                raise ValueError('Формат серии: URL | название | автор | порог. Книги: URL | название | порог.')
             kind = 'series' if command == '/addseries' else 'book'
-            if kind == 'book' and len(parts) > 2:
-                raise ValueError('Для книги формат: URL | название')
+            if kind == 'book' and len(parts) > 3:
+                raise ValueError('Для книги формат: URL | название | порог')
             name = parts[1] if len(parts) > 1 else ''
-            author = parts[2] if len(parts) > 2 else ''
-            target = self.store.add_target(kind, parts[0], name, name if kind == 'series' else '', author)
+            author = parts[2] if kind == 'series' and len(parts) > 2 else ''
+            limit_index = 3 if kind == 'series' else 2
+            limit = parts[limit_index] if len(parts) > limit_index else None
+            before = {t.id: t for t in self.store.targets()}
+            target = self.store.add_target(kind, parts[0], name, name if kind == 'series' else '', author, limit=limit)
             self.store.set('pending_action', '')
-            self.wake.set()
-            return f'Добавлено: ID {target.id}, {target.name}\n{target.url}\nПроверка запрошена.'
+            previous = before.get(target.id)
+            changed = previous is None or not previous.enabled or previous.price_revision != target.price_revision
+            if changed:
+                self.request_check(target.id)
+            action = 'Проверка этой цели запрошена.' if changed else 'Условия не изменились; новая проверка не нужна.'
+            return f'Сохранено: ID {target.id}, {target.name}\nПорог: <{target.price_limit} ₽\n{target.url}\n{action}'
         if command == '/list':
             targets = self.store.targets()
-            return '\n\n'.join(f"ID {t.id} · {'включено' if t.enabled else 'пауза'} · {'серия' if t.kind == 'series' else 'книга'}\n{t.name}\n{t.url}" for t in targets) or 'Нет целей мониторинга.'
+            return '\n\n'.join(f"ID {t.id} · {'включено' if t.enabled else 'пауза'} · {'серия' if t.kind == 'series' else 'книга'}\n{t.name}\nПорог: <{t.price_limit} ₽\n{t.url}" for t in targets) or 'Нет целей мониторинга.'
         if command in ('/pause', '/resume', '/remove'):
             if not argument.isdecimal() or int(argument) <= 0:
                 raise ValueError(f'Укажите ID из /list, например {command} 1')
             target_id = int(argument)
-            self.store.enable(target_id, command == '/resume')
-            if command == '/resume':
-                self.wake.set()
+            changed = self.store.enable(target_id, command == '/resume')
+            if command == '/resume' and changed:
+                self.request_check(target_id)
             return f"Мониторинг ID {target_id}: {'включён' if command == '/resume' else 'отключён'}. /resume {target_id} — возобновить."
         if command == '/check':
-            self.wake.set()
+            if argument:
+                target = self.get_target(argument)
+                if not target.enabled:
+                    return f'ID {target.id} на паузе. Сначала /resume {target.id}.'
+                self.request_check(target.id)
+            else:
+                self.request_check()
             return 'Проверка запрошена. Если обход уже идёт, следующая проверка начнётся после него.'
         if command == '/status':
-            return (f"Порог: <{self.store.get('price_limit')} ₽\n"
+            return (f"Пороги индивидуальные: /list. Для новых целей: <{self.store.get('price_limit')} ₽\n"
                     f"Включённых целей: {len(self.store.targets(True))}\n"
                     f"Состояние: {self.store.get('worker_state', 'запуск')}\n"
                     f"Следующая плановая проверка: {self.store.get('next_check', 'ещё не назначена')}\n"

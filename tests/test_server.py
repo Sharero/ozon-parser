@@ -31,6 +31,35 @@ class NetworkConfiguration(unittest.TestCase):
 
 
 class Scheduling(unittest.TestCase):
+    @patch('ozon_monitor.service.Monitor')
+    def test_changes_during_scan_queue_one_target_without_full_rescan(self, monitor):
+        calls = []
+        def check(target_ids=None):
+            calls.append(target_ids)
+            if len(calls) == 1:
+                self.store.request_check(1)
+                self.store.request_check(1)
+            else:
+                self.stop.set()
+        monitor.return_value.run_all.side_effect = check
+        with patch('ozon_monitor.service.BotPoller.run'):
+            run_service(self.store, Mock(), self.path, 12345, self.stop, interval=3600)
+        self.assertEqual(calls, [None, [1]])
+
+    @patch('ozon_monitor.service.Monitor')
+    def test_manual_check_does_not_shift_hourly_schedule(self, monitor):
+        deadlines = []
+        def check(target_ids=None):
+            deadlines.append(self.store.get('next_check'))
+            if len(deadlines) == 1:
+                self.store.request_check(1)
+            else:
+                self.stop.set()
+        monitor.return_value.run_all.side_effect = check
+        with patch('ozon_monitor.service.BotPoller.run'):
+            run_service(self.store, Mock(), self.path, 12345, self.stop, interval=3600)
+        self.assertEqual(deadlines[0], deadlines[1])
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name)
@@ -61,13 +90,13 @@ class Scheduling(unittest.TestCase):
         def check():
             started.set()
             self.assertTrue(changed.wait(2))
-            self.assertEqual(self.store.get('price_limit'), '400')
+            self.assertEqual(self.store.snapshot(1)[1], 400)
             self.stop.set()
         def poll(poller):
             if not started.wait(2):
                 self.stop.set()
                 return
-            poller.controller.handle({'message': {'from': {'id': 12345}, 'chat': {'id': 12345}, 'text': '/price 400'}})
+            poller.controller.handle({'message': {'from': {'id': 12345}, 'chat': {'id': 12345}, 'text': '/price 1 400'}})
             changed.set()
         monitor.return_value.run_all.side_effect = check
         with patch('ozon_monitor.service.BotPoller.run', poll):

@@ -15,6 +15,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class Result:
     name: str
+    limit: Decimal = Decimal('550')
     checked: int = 0
     notified: int = 0
     excluded: int = 0
@@ -27,7 +28,7 @@ class Result:
         minimum = f'; минимальная прочитанная цена Ozon Банка {self.minimum} ₽' if self.minimum is not None else '; цена не подтверждена'
         end = '; остановка выше порога' if self.cutoff else ''
         error = f'\nОшибка: {self.detail[:350]}' if self.detail else ''
-        return (f'{self.name}: проверено {self.checked}, уведомлений {self.notified}, '
+        return (f'{self.name} · порог <{self.limit} ₽: проверено {self.checked}, уведомлений {self.notified}, '
                 f'исключено {self.excluded}, ошибок {self.errors}{minimum}{end}{error}')
 
 
@@ -53,9 +54,15 @@ class Monitor:
             log.error('Не удалось отправить предупреждение о возрасте: %s', exc)
 
     def target_cycle(self, original):
-        result = Result(original.name)
+        result = Result(original.name, limit=original.price_limit)
         source = None
         try:
+            current, _, _, _ = self.store.snapshot(original.id)
+            if current is None or not current.enabled:
+                result.detail = 'Мониторинг отключён через Telegram'
+                return result
+            original = current
+            result.limit = current.price_limit
             source = self.factory(self.directory, original, self.max_pages, self.delay)
             urls = source.discover()
             log.info('Мониторинг #%s %s: найдено карточек %s', original.id, original.name, len(urls))
@@ -72,6 +79,7 @@ class Monitor:
                     book = source.book(url)
                     # Re-read settings after loading the card, so commands apply during an active run.
                     target, limit, revision, excluded = self.store.snapshot(original.id)
+                    result.limit = limit
                     if target is None or not target.enabled:
                         result.detail = 'Мониторинг отключён через Telegram'
                         break
@@ -124,10 +132,12 @@ class Monitor:
                     log.warning('Ошибка закрытия браузера мониторинга #%s', original.id)
         return result
 
-    def run_all(self):
+    def run_all(self, target_ids=None):
         self.store.set('worker_state', 'проверка цен')
         self.store.set('last_started', datetime.now().isoformat(timespec='seconds'))
         targets = self.store.targets(enabled_only=True)
+        if target_ids is not None:
+            targets = [target for target in targets if target.id in target_ids]
         results = []
         for target in targets:
             if self.stop.is_set():
@@ -135,7 +145,6 @@ class Monitor:
             self.store.set('worker_state', f'проверка #{target.id}: {target.name}')
             results.append(self.target_cycle(target))
         summary = 'Проверка Ozon · ' + datetime.now().strftime('%d.%m %H:%M') + '\n'
-        summary += f"Порог: строго ниже {self.store.get('price_limit')} ₽\n"
         summary += '\n\n'.join(result.summary() for result in results) if results else 'Нет включённых целей мониторинга.'
         self.store.set('last_summary', summary)
         self.store.set('worker_state', 'ожидание')
@@ -158,18 +167,24 @@ def run_service(store, telegram, directory, admin_id, stop, max_pages=100, delay
     try:
         while not stop.is_set():
             remaining = due - time.monotonic()
-            if remaining > 0 and not wake.is_set():
+            if remaining > 0 and not store.has_checks():
                 stop.wait(min(1, remaining))
                 continue
             wake.clear()
             started = time.monotonic()
-            store.set('next_check', (datetime.now() + timedelta(seconds=interval)).strftime('%d.%m.%Y %H:%M:%S'))
+            scheduled = remaining <= 0
+            requested = store.take_checks()
+            if scheduled:
+                due = started + interval
+                store.set('next_check', (datetime.now() + timedelta(seconds=interval)).strftime('%d.%m.%Y %H:%M:%S'))
             try:
-                monitor.run_all()
+                if scheduled or 0 in requested:
+                    monitor.run_all()
+                elif requested:
+                    monitor.run_all(target_ids=requested)
             except Exception as exc:
                 log.error('Цикл мониторинга: %s', exc if isinstance(exc, RuntimeError) else type(exc).__name__)
                 store.set('worker_state', 'ошибка цикла, следующая попытка по расписанию')
-            due = started + interval
     finally:
         stop.set()
         store.set('worker_state', 'сервис остановлен')

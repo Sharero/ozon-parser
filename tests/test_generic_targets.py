@@ -12,6 +12,17 @@ from decimal import Decimal
 
 
 class GenericTargets(unittest.TestCase):
+    def test_non_book_product_reads_price_without_book_metadata(self):
+        transport = Mock(mode='json')
+        transport.page.return_value = book_payload(price='1999 ₽')
+        del transport.page.return_value['widgetStates']['webCharacteristics-1']
+        source = UpstreamOzon(Path('/tmp/monitor'), delay=0, transport=transport,
+                              search_url='https://www.ozon.ru/product/kettle-123/', kind='product')
+        self.assertEqual(source.discover(), ['https://www.ozon.ru/product/kettle-123/'])
+        product = source.book(source.search_url)
+        self.assertEqual(product.card_price, Decimal('1999'))
+        self.assertEqual((product.author, product.series, product.binding), ('', '', ''))
+
     def test_single_book_discovery_does_not_scan_initial_king_series(self):
         transport = Mock()
         source = UpstreamOzon(Path('/tmp/monitor'), transport=transport,

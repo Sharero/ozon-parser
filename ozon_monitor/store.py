@@ -107,17 +107,17 @@ class Store:
             raise ValueError('Укажите точное название серии после |, например URL | Король на все времена')
         if any(len(value) > 250 for value in (name, series, author)):
             raise ValueError('Название/автор должны быть короче 250 символов')
-        name = name.strip() or (series.strip() if kind == 'series' else 'Книга ' + url.rstrip('/').rsplit('-', 1)[-1].rsplit('/', 1)[-1])
+        name = name.strip() or (series.strip() if kind == 'series' else ('Товар ' if kind == 'product' else 'Книга ') + url.rstrip('/').rsplit('-', 1)[-1].rsplit('/', 1)[-1])
         with self.connect() as db:
             previous = db.execute('SELECT * FROM targets WHERE url=?', (url,)).fetchone()
             amount = price_limit(limit) if limit is not None else (
                 Decimal(previous['price_limit']) if previous else Decimal(db.execute("SELECT value FROM settings WHERE key='price_limit'").fetchone()[0]))
             revision = previous['price_revision'] if previous else 0
-            if previous and (Decimal(previous['price_limit']) != amount or previous['series'] != series.strip()
+            if previous and (previous['kind'] != kind or Decimal(previous['price_limit']) != amount or previous['series'] != series.strip()
                              or previous['author'] != author.strip()):
                 revision += 1
             db.execute('''INSERT INTO targets(kind,url,name,series,author,hardcover,price_limit,price_revision) VALUES(?,?,?,?,?,?,?,?)
-                ON CONFLICT(url) DO UPDATE SET enabled=1,name=excluded.name,series=excluded.series,author=excluded.author,
+                ON CONFLICT(url) DO UPDATE SET enabled=1,kind=excluded.kind,name=excluded.name,series=excluded.series,author=excluded.author,
                 hardcover=excluded.hardcover,price_limit=excluded.price_limit,price_revision=excluded.price_revision''',
                 (kind, url, name, series.strip(), author.strip(), int(kind == 'series'), str(amount), revision))
             row = db.execute('SELECT * FROM targets WHERE url=?', (url,)).fetchone()
@@ -131,10 +131,14 @@ class Store:
             db.execute('UPDATE targets SET enabled=? WHERE id=?', (int(enabled), target_id))
             if not enabled:
                 db.execute('DELETE FROM check_requests WHERE target_id=?', (target_id,))
+                if not db.execute('SELECT 1 FROM check_requests LIMIT 1').fetchone():
+                    db.execute("DELETE FROM settings WHERE key='check_urgent'")
         return bool(row[0]) != bool(enabled)
 
-    def request_check(self, target_id=None):
+    def request_check(self, target_id=None, immediate=False):
         with self.connect() as db:
+            if immediate:
+                db.execute("INSERT INTO settings VALUES ('check_urgent','1') ON CONFLICT(key) DO UPDATE SET value='1'")
             if target_id is None:
                 db.execute('DELETE FROM check_requests')
                 db.execute('INSERT INTO check_requests VALUES (0)')
@@ -146,6 +150,7 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             ids = [row[0] for row in db.execute('SELECT target_id FROM check_requests ORDER BY target_id')]
             db.execute('DELETE FROM check_requests')
+            db.execute("DELETE FROM settings WHERE key='check_urgent'")
         return ids
 
     def has_checks(self):

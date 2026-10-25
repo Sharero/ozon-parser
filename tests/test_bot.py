@@ -13,6 +13,18 @@ from test_monitor import sample
 
 
 class OwnerBot(unittest.TestCase):
+    def test_add_non_book_product_and_manual_check_urgency(self):
+        self.bot.handle(self.message('/addproduct https://www.ozon.ru/product/kettle-987/ | Чайник | 2500'))
+        target = self.store.targets()[-1]
+        self.assertEqual(target.kind, 'product')
+        self.assertFalse(target.hardcover)
+        self.assertEqual(target.series, '')
+        self.assertEqual(target.price_limit, 2500)
+        self.assertNotEqual(self.store.get('check_urgent'), '1')
+        self.bot.handle(self.message(f'/check {target.id}'))
+        self.assertEqual(self.store.get('check_urgent'), '1')
+        self.assertEqual(self.store.take_checks(), [target.id])
+        self.assertEqual(self.store.get('check_urgent'), '')
     def test_command_scan_policy_and_noop_changes(self):
         def check(command, expected):
             self.store.take_checks()

@@ -132,7 +132,7 @@ class UpstreamOzon:
             transport = UpstreamTransport(directory, probe_url=search_url, probe_kind=kind)
         self.transport, self.max_pages, self.delay = transport, max_pages, delay
         self.directory = directory
-        self.search_url, self.kind, self.strict_metadata = search_url, kind, strict_metadata
+        self.search_url, self.kind, self.strict_metadata = search_url, kind, strict_metadata and kind != 'product'
 
     def close(self):
         self.transport.close()
@@ -165,7 +165,7 @@ class UpstreamOzon:
         return self._dom_source().inspect_price(parsed[1])
 
     def discover(self):
-        if self.kind == 'book':
+        if self.kind in ('book', 'product'):
             return [self.search_url]
         if self.transport.mode == 'dom':
             return self._dom_source().discover()
@@ -214,7 +214,7 @@ class UpstreamOzon:
         sku, canonical_url = parsed
         payload = self.fetch(canonical_url)
         widgets = states(payload)
-        fields = characteristics(widgets)
+        fields = {} if self.kind == 'product' else characteristics(widgets)
         title = next((state.get('title') for key, state in widgets.items()
                       if key.startswith('webProductHeading-') and isinstance(state.get('title'), str)), '')
         author = fields.get('Автор') or fields.get('Авторы', '')

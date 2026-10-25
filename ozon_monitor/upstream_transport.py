@@ -85,7 +85,7 @@ class UpstreamTransport(OzonClient):
         widgets = self._parse_widget_states(body) if status == 200 and not self._is_captcha_response(status, body) else None
         names = sorted({key.split('-')[0] for key in (widgets or {})})
         log.info('Проверка JSON через %s: HTTP %s; виджеты: %s', channel, status, ', '.join(names[:15]) or 'нет')
-        if self.probe_kind == 'book':
+        if self.probe_kind in ('book', 'product'):
             return bool(widgets and any(key.startswith('webProductHeading-') for key in widgets))
         return bool(widgets and any(key.startswith('searchResultsV2-') for key in widgets))
 
@@ -107,7 +107,7 @@ class UpstreamTransport(OzonClient):
         log.info('Оба JSON-способа отказали. Проверяю обычную HTML-страницу поиска в Selenium')
         try:
             dom = SeleniumDOMOzon(driver, delay=0)
-            if self.probe_kind == 'book':
+            if self.probe_kind in ('book', 'product'):
                 dom.confirm_product(self.probe_url)
             else:
                 dom.confirm_search(self.probe_url)
@@ -220,7 +220,7 @@ class UpstreamTransport(OzonClient):
         if self.driver is None:
             self.refresh(retain_browser=True)
         dom = SeleniumDOMOzon(self.driver, delay=0)
-        if self.probe_kind == 'book':
+        if self.probe_kind in ('book', 'product'):
             dom.confirm_product(url)
         else:
             dom.confirm_search(url)

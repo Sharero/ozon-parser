@@ -23,9 +23,9 @@ def watch_url(value: str, kind: str) -> str:
     parts = urlsplit(value.strip())
     if parts.scheme != 'https' or parts.hostname not in ('ozon.ru', 'www.ozon.ru') or parts.username or parts.password or parts.port not in (None, 443):
         raise ValueError('Нужна полная HTTPS-ссылка на ozon.ru без логина и пароля')
-    if kind == 'book':
+    if kind in ('book', 'product'):
         if not re.fullmatch(r'/product/(?:[^/]*-)?\d+/?', parts.path):
-            raise ValueError('Нужна полная ссылка /product/… на конкретную книгу, не короткая /t/ ссылка')
+            raise ValueError('Нужна полная ссылка /product/… на конкретный товар, не короткая /t/ ссылка')
         return urlunsplit(('https', 'www.ozon.ru', parts.path.rstrip('/') + '/', '', ''))
     parameters = parse_qsl(parts.query)
     search_path = parts.path.rstrip('/') == '/search' or parts.path.startswith('/category/')

@@ -5,26 +5,28 @@ from datetime import datetime
 
 log = logging.getLogger(__name__)
 
-MENU = {'keyboard': [['📋 Мониторинг', '💰 Порог'], ['➕ Серия', '➕ Книга'],
+MENU = {'keyboard': [['📋 Мониторинг', '💰 Порог'], ['➕ Серия', '➕ Книга', '➕ Товар'],
                      ['🚫 Исключить', '📚 Исключения'], ['🔄 Проверить', 'ℹ️ Статус']],
         'resize_keyboard': True}
 COMMANDS = [
-    ('start', 'Меню и помощь'), ('list', 'Серии и книги'), ('price', 'Порог цели: /price ID сумма'),
+    ('start', 'Меню и помощь'), ('list', 'Серии, книги и товары'), ('price', 'Порог цели: /price ID сумма'),
     ('defaultprice', 'Начальный порог новых целей'),
     ('addseries', 'Добавить: URL | точная серия | автор (необязательно)'),
     ('addbook', 'Добавить: URL | название (необязательно)'),
+    ('addproduct', 'Добавить товар: URL | название | порог'),
     ('exclude', 'Исключить название книги'), ('include', 'Вернуть название в поиск'),
     ('exclusions', 'Список исключений'), ('pause', 'Приостановить: /pause ID'),
     ('resume', 'Возобновить: /resume ID'), ('remove', 'Убрать из мониторинга: /remove ID'),
     ('check', 'Запросить проверку сейчас'), ('status', 'Состояние сервиса'),
-    ('reports', 'Часовые отчёты: /reports on или off'), ('cancel', 'Отменить ввод'),
+    ('reports', 'Отчёты о найденных предложениях: /reports on или off'), ('cancel', 'Отменить ввод'),
 ]
 HELP = '''Управление мониторингом Ozon:
-/price ID сумма — отдельный порог серии или книги, например /price 2 400 (строго ниже)
+/price ID сумма — отдельный порог серии, книги или товара, например /price 2 400 (строго ниже)
 /defaultprice 550 — начальный порог только для новых целей
 /list — список мониторинга с ID
 /addseries URL | Название серии | Автор | Порог — добавить серию; автор и порог необязательны. Подходит ссылка на серию или поиск Ozon. Только твёрдый переплёт, сортировка по цене.
 /addbook URL | Название | Порог — отслеживать конкретную книгу; название и порог необязательны, переплёт соответствует карточке.
+/addproduct URL | Название | Порог — любой товар; название и порог необязательны
 /exclude Название — исключить купленную книгу
 /include Название — убрать исключение
 /exclusions — все исключения
@@ -32,9 +34,9 @@ HELP = '''Управление мониторингом Ozon:
 /remove ID — отключить цель
 /check [ID] — проверить все цели или одну цель сейчас
 /status — состояние и результат последней проверки
-/reports on или off — часовые отчёты
+/reports on или off — отчёты о найденных предложениях; ежедневный отчёт в 12:00 приходит всегда
 /cancel — отменить ввод
-Настройки сохраняются после перезапуска.'''
+Плановые проверки в :00 и :30. Часовой пояс задаётся TZ (по умолчанию Новосибирск). Добавление и изменение настроек не сдвигают график. /check запускает внеплановую проверку. Настройки сохраняются после перезапуска.'''
 
 
 class BotController:
@@ -44,8 +46,8 @@ class BotController:
     def reply(self, text):
         self.telegram.send_text(text, chat_id=self.admin_id, reply_markup=MENU)
 
-    def request_check(self, target_id=None):
-        self.store.request_check(target_id)
+    def request_check(self, target_id=None, immediate=False):
+        self.store.request_check(target_id, immediate=immediate)
         self.wake.set()
 
     def get_target(self, value):
@@ -65,7 +67,7 @@ class BotController:
         if not text:
             return
         buttons = {'📋 Мониторинг': '/list', '💰 Порог': '/price', '➕ Серия': '/addseries',
-                   '➕ Книга': '/addbook', '🚫 Исключить': '/exclude', '📚 Исключения': '/exclusions',
+                   '➕ Книга': '/addbook', '➕ Товар': '/addproduct', '🚫 Исключить': '/exclude', '📚 Исключения': '/exclusions',
                    '🔄 Проверить': '/check', 'ℹ️ Статус': '/status'}
         text = buttons.get(text, text)
         if text.startswith('/'):
@@ -95,6 +97,7 @@ class BotController:
             '/include': 'Отправьте название, которое нужно убрать из исключений.',
             '/addseries': 'Отправьте: ссылка на серию или поиск Ozon | точное название серии | автор | порог. Автор и порог необязательны; для пропуска автора оставьте пустое поле между |.',
             '/addbook': 'Отправьте полную ссылку на книгу Ozon. Можно добавить | название | порог.',
+            '/addproduct': 'Отправьте полную ссылку /product/… на товар Ozon. Можно добавить | название | порог.',
         }
         if command in prompts and not argument:
             self.store.set('pending_action', command)
@@ -110,7 +113,7 @@ class BotController:
                 return f'ID {target.id}: порог уже <{amount} ₽. Новая проверка не нужна.'
             if target.enabled:
                 self.request_check(target.id)
-            action = 'Проверка этой цели запрошена после текущего обхода.' if target.enabled else 'Цель на паузе; проверка начнётся после /resume.'
+            action = 'Проверка по ближайшему расписанию (:00 или :30).' if target.enabled else 'Цель на паузе; проверка начнётся после /resume.'
             return f'ID {target.id}, {target.name}: порог строго ниже {amount} ₽ с Ozon Картой. {action}'
         if command == '/defaultprice':
             amount = self.store.set_price(argument)
@@ -125,17 +128,17 @@ class BotController:
             self.store.set('pending_action', '')
             if changed:
                 self.request_check()
-            return f'Книга возвращена в мониторинг: {argument}. Проверка включённых целей запрошена.' if changed else 'Такого названия в исключениях нет.'
+            return f'Книга возвращена в мониторинг: {argument}. Проверка включённых целей — по ближайшему расписанию (:00 или :30).' if changed else 'Такого названия в исключениях нет.'
         if command == '/exclusions':
             titles = self.store.exclusions().values()
             return 'Исключённые книги:\n' + '\n'.join(titles) if titles else 'Исключений нет.'
-        if command in ('/addseries', '/addbook'):
+        if command in ('/addseries', '/addbook', '/addproduct'):
             parts = [part.strip() for part in argument.split('|')]
             if len(parts) > 4 or not parts[0]:
                 raise ValueError('Формат серии: URL | название | автор | порог. Книги: URL | название | порог.')
-            kind = 'series' if command == '/addseries' else 'book'
-            if kind == 'book' and len(parts) > 3:
-                raise ValueError('Для книги формат: URL | название | порог')
+            kind = {'/addseries': 'series', '/addbook': 'book', '/addproduct': 'product'}[command]
+            if kind != 'series' and len(parts) > 3:
+                raise ValueError('Для товара/книги формат: URL | название | порог')
             name = parts[1] if len(parts) > 1 else ''
             author = parts[2] if kind == 'series' and len(parts) > 2 else ''
             limit_index = 3 if kind == 'series' else 2
@@ -147,11 +150,12 @@ class BotController:
             changed = previous is None or not previous.enabled or previous.price_revision != target.price_revision
             if changed:
                 self.request_check(target.id)
-            action = 'Проверка этой цели запрошена.' if changed else 'Условия не изменились; новая проверка не нужна.'
+            action = 'Проверка по ближайшему расписанию (:00 или :30).' if changed else 'Условия не изменились; новая проверка не нужна.'
             return f'Сохранено: ID {target.id}, {target.name}\nПорог: <{target.price_limit} ₽\n{target.url}\n{action}'
         if command == '/list':
             targets = self.store.targets()
-            return '\n\n'.join(f"ID {t.id} · {'включено' if t.enabled else 'пауза'} · {'серия' if t.kind == 'series' else 'книга'}\n{t.name}\nПорог: <{t.price_limit} ₽\n{t.url}" for t in targets) or 'Нет целей мониторинга.'
+            labels = {'series': 'серия', 'book': 'книга', 'product': 'товар'}
+            return '\n\n'.join(f"ID {t.id} · {'включено' if t.enabled else 'пауза'} · {labels[t.kind]}\n{t.name}\nПорог: <{t.price_limit} ₽\n{t.url}" for t in targets) or 'Нет целей мониторинга.'
         if command in ('/pause', '/resume', '/remove'):
             if not argument.isdecimal() or int(argument) <= 0:
                 raise ValueError(f'Укажите ID из /list, например {command} 1')
@@ -165,9 +169,9 @@ class BotController:
                 target = self.get_target(argument)
                 if not target.enabled:
                     return f'ID {target.id} на паузе. Сначала /resume {target.id}.'
-                self.request_check(target.id)
+                self.request_check(target.id, immediate=True)
             else:
-                self.request_check()
+                self.request_check(immediate=True)
             return 'Проверка запрошена. Если обход уже идёт, следующая проверка начнётся после него.'
         if command == '/status':
             return (f"Пороги индивидуальные: /list. Для новых целей: <{self.store.get('price_limit')} ₽\n"
@@ -179,7 +183,7 @@ class BotController:
             if argument not in ('on', 'off'):
                 raise ValueError('Используйте /reports on или /reports off')
             self.store.set('reports', argument)
-            return 'Часовые отчёты включены.' if argument == 'on' else 'Часовые отчёты отключены; уведомления о подходящей цене остаются.'
+            return ('Отчёты о найденных предложениях включены.' if argument == 'on' else 'Отчёты о найденных предложениях отключены; уведомления о цене остаются.') + ' Ежедневный отчёт в 12:00 приходит всегда.'
         if command == '/cancel':
             return 'Ввод отменён.'
         return 'Неизвестная команда. /help'

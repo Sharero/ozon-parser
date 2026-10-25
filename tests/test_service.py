@@ -11,6 +11,28 @@ from test_monitor import sample
 
 
 class RuntimeMonitor(unittest.TestCase):
+    def test_no_matching_offers_means_no_routine_report(self):
+        self.factory.return_value = self.source([sample('600')])
+        self.assertTrue(self.monitor.run_all())
+        self.telegram.send_text.assert_not_called()
+        self.assertIn('подходит 0', self.store.get('last_full_summary'))
+
+    def test_existing_matching_offer_counts_as_found_even_without_new_alert(self):
+        self.store.record(1, sample('399'), True, 0, notified=True)
+        self.factory.return_value = self.source([sample('399')])
+        self.assertTrue(self.monitor.run_all())
+        self.telegram.send.assert_not_called()
+        self.telegram.send_text.assert_called_once()
+        self.assertIn('подходит 1', self.store.get('last_summary'))
+
+    def test_product_does_not_require_book_fields_or_use_book_exclusions(self):
+        target = self.store.add_target('product', sample().url, 'Чайник', limit='2500')
+        self.store.exclude('Чайник')
+        product = replace(sample('1999'), title='Чайник', author='', series='', binding='')
+        self.factory.return_value = self.source([product])
+        result = self.monitor.target_cycle(target)
+        self.assertEqual(result.notified, 1)
+        self.assertEqual(result.errors, 0)
     def test_each_target_uses_own_price_and_cutoff(self):
         direct = self.store.add_target('book', sample().url, limit='700')
         self.store.set_price('400', 1)
@@ -133,7 +155,7 @@ class RuntimeMonitor(unittest.TestCase):
         self.factory.return_value = source
         self.assertFalse(self.monitor.run_all())
         self.assertIn('Ozon HTTP 403', self.store.get('last_summary'))
-        self.telegram.send_text.assert_called_once()
+        self.telegram.send_text.assert_not_called()
         source.close.assert_called_once()
 
     def test_pausing_target_during_card_load_prevents_notification(self):

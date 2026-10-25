@@ -1,13 +1,13 @@
 """Single browser worker plus independently polled Telegram commands."""
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 import logging
 import threading
-import time
 from .exclusions import title_key
 from .bot import BotController, BotPoller
 from .diagnostics import AgeConfirmationRequired
+from .schedule import next_half_hour, DailyReporter
 
 log = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ class Result:
     limit: Decimal = Decimal('550')
     checked: int = 0
     notified: int = 0
+    found: int = 0
     excluded: int = 0
     errors: int = 0
     minimum: Decimal | None = None
@@ -28,7 +29,7 @@ class Result:
         minimum = f'; минимальная прочитанная цена Ozon Банка {self.minimum} ₽' if self.minimum is not None else '; цена не подтверждена'
         end = '; остановка выше порога' if self.cutoff else ''
         error = f'\nОшибка: {self.detail[:350]}' if self.detail else ''
-        return (f'{self.name} · порог <{self.limit} ₽: проверено {self.checked}, уведомлений {self.notified}, '
+        return (f'{self.name} · порог <{self.limit} ₽: проверено {self.checked}, подходит {self.found}, уведомлений {self.notified}, '
                 f'исключено {self.excluded}, ошибок {self.errors}{minimum}{end}{error}')
 
 
@@ -83,7 +84,7 @@ class Monitor:
                     if target is None or not target.enabled:
                         result.detail = 'Мониторинг отключён через Telegram'
                         break
-                    purchased = title_key(book.title, book.author) in excluded
+                    purchased = original.kind != 'product' and title_key(book.title, book.author) in excluded
                     eligible, reason, unknown = target.evaluate(book, limit)
                     if not purchased and book.card_price is not None and (eligible or reason.startswith('Цена вне порога')):
                         result.minimum = min(result.minimum, book.card_price) if result.minimum is not None else book.card_price
@@ -102,6 +103,8 @@ class Monitor:
                     if unknown:
                         raise RuntimeError(reason)
                     notify = self.store.needs_notification(target.id, book, eligible, revision)
+                    if eligible:
+                        result.found += 1
                     log.info('#%s SKU %s: %s ₽, порог <%s ₽, %s', target.id, book.sku, book.card_price, limit, reason)
                     if notify:
                         self.telegram.send(book)
@@ -147,36 +150,44 @@ class Monitor:
         summary = 'Проверка Ozon · ' + datetime.now().strftime('%d.%m %H:%M') + '\n'
         summary += '\n\n'.join(result.summary() for result in results) if results else 'Нет включённых целей мониторинга.'
         self.store.set('last_summary', summary)
+        if target_ids is None:
+            self.store.set('last_full_summary', summary)
         self.store.set('worker_state', 'ожидание')
         log.info('%s', summary)
-        if self.store.get('reports') == 'on' and not self.stop.is_set():
+        if self.store.get('reports') == 'on' and any(result.found for result in results) and not self.stop.is_set():
             try:
                 self.telegram.send_text(summary)
             except RuntimeError as exc:
-                log.error('Часовой отчёт Telegram: %s', exc)
+                log.error('Отчёт Telegram: %s', exc)
         return all(result.errors == 0 for result in results)
 
 
-def run_service(store, telegram, directory, admin_id, stop, max_pages=100, delay=3, interval=3600):
+def run_service(store, telegram, directory, admin_id, stop, max_pages=100, delay=3, now=None):
+    now = now or datetime.now
     wake = threading.Event()
     controller = BotController(store, telegram, admin_id, wake)
     poller = threading.Thread(target=BotPoller(controller, stop).run, name='telegram-commands', daemon=True)
     poller.start()
     monitor = Monitor(store, telegram, directory, stop, max_pages=max_pages, delay=delay)
-    due = time.monotonic()
+    started = now()
+    due = started.replace(microsecond=0) if started.minute % 30 == 0 and started.second == 0 else next_half_hour(started)
+    store.set('worker_state', 'ожидание проверки в :00 или :30')
+    store.set('next_check', due.strftime('%d.%m.%Y %H:%M:%S'))
+    reporter = threading.Thread(target=DailyReporter(store, telegram, stop, now).run, name='daily-report', daemon=True)
+    reporter.start()
     try:
         while not stop.is_set():
-            remaining = due - time.monotonic()
-            if remaining > 0 and not store.has_checks():
+            current = now()
+            remaining = (due - current).total_seconds()
+            if remaining > 0 and not (store.get('check_urgent') == '1' and store.has_checks()):
                 stop.wait(min(1, remaining))
                 continue
             wake.clear()
-            started = time.monotonic()
             scheduled = remaining <= 0
             requested = store.take_checks()
             if scheduled:
-                due = started + interval
-                store.set('next_check', (datetime.now() + timedelta(seconds=interval)).strftime('%d.%m.%Y %H:%M:%S'))
+                due = next_half_hour(current)
+                store.set('next_check', due.strftime('%d.%m.%Y %H:%M:%S'))
             try:
                 if scheduled or 0 in requested:
                     monitor.run_all()
@@ -185,7 +196,12 @@ def run_service(store, telegram, directory, admin_id, stop, max_pages=100, delay
             except Exception as exc:
                 log.error('Цикл мониторинга: %s', exc if isinstance(exc, RuntimeError) else type(exc).__name__)
                 store.set('worker_state', 'ошибка цикла, следующая попытка по расписанию')
+            # A long check never queues overlapping or repeated catch-up scans.
+            if due <= now():
+                due = next_half_hour(now())
+                store.set('next_check', due.strftime('%d.%m.%Y %H:%M:%S'))
     finally:
         stop.set()
         store.set('worker_state', 'сервис остановлен')
         poller.join(timeout=30)
+        reporter.join(timeout=30)

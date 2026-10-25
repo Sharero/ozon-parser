@@ -2,7 +2,7 @@ import tempfile
 import threading
 import time
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
 from ozon_monitor.network import proxy_url
@@ -32,76 +32,65 @@ class NetworkConfiguration(unittest.TestCase):
 
 
 class Scheduling(unittest.TestCase):
-    @patch('ozon_monitor.service.Monitor')
-    def test_changes_during_scan_queue_one_target_without_full_rescan(self, monitor):
-        calls = []
-        def check(target_ids=None):
-            calls.append(target_ids)
-            if len(calls) == 1:
-                self.store.request_check(1)
-                self.store.request_check(1)
-            else:
-                self.stop.set()
-        monitor.return_value.run_all.side_effect = check
-        with patch('ozon_monitor.service.BotPoller.run'):
-            run_service(self.store, Mock(), self.path, 12345, self.stop, interval=3600)
-        self.assertEqual(calls, [None, [1]])
-
-    @patch('ozon_monitor.service.Monitor')
-    def test_manual_check_does_not_shift_hourly_schedule(self, monitor):
-        deadlines = []
-        def check(target_ids=None):
-            deadlines.append(self.store.get('next_check'))
-            if len(deadlines) == 1:
-                self.store.request_check(1)
-            else:
-                self.stop.set()
-        monitor.return_value.run_all.side_effect = check
-        with patch('ozon_monitor.service.BotPoller.run'), patch('ozon_monitor.service.datetime') as clock:
-            clock.now.return_value = datetime(2026, 10, 24, 10, 0)
-            run_service(self.store, Mock(), self.path, 12345, self.stop, interval=3600)
-        self.assertEqual(deadlines[0], deadlines[1])
-        self.assertEqual(clock.now.call_count, 1)
-
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name)
         self.store = Store(self.path / 'db.sqlite3')
         self.store.initialize()
+        self.current = datetime(2026, 10, 25, 10, 29, 59)
         self.stop = threading.Event()
+        def advance(seconds):
+            self.current += timedelta(seconds=seconds)
+            return self.stop.is_set()
+        self.stop.wait = advance
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    @patch('ozon_monitor.service.BotPoller.run')
-    @patch('ozon_monitor.service.Monitor')
-    def test_checks_repeat_without_concurrent_workers(self, monitor, poller):
+    def service(self, monitor):
+        with patch('ozon_monitor.service.Monitor', return_value=monitor), \
+             patch('ozon_monitor.service.BotPoller.run'), \
+             patch('ozon_monitor.service.DailyReporter.run'):
+            run_service(self.store, Mock(), self.path, 12345, self.stop, now=lambda: self.current)
+
+    def test_start_and_regular_commands_wait_for_boundary(self):
+        monitor = Mock()
+        starts = []
+        self.store.request_check(1)
+        def check(**kwargs):
+            starts.append((self.current, kwargs))
+            if len(starts) == 1:
+                self.store.request_check(1)
+            else:
+                self.stop.set()
+        monitor.run_all.side_effect = check
+        self.service(monitor)
+        self.assertEqual(starts, [(datetime(2026, 10, 25, 10, 30), {}),
+                                  (datetime(2026, 10, 25, 11, 0), {})])
+
+    def test_explicit_check_is_immediate_without_shifting_schedule(self):
+        monitor = Mock()
+        starts = []
+        self.store.request_check(1, immediate=True)
+        def check(**kwargs):
+            starts.append((self.current, kwargs, self.store.get('next_check')))
+            if len(starts) == 2:
+                self.stop.set()
+        monitor.run_all.side_effect = check
+        self.service(monitor)
+        self.assertEqual(starts[0][:2], (datetime(2026, 10, 25, 10, 29, 59), {'target_ids': [1]}))
+        self.assertEqual(starts[1][:2], (datetime(2026, 10, 25, 10, 30), {}))
+        self.assertEqual(starts[0][2], '25.10.2026 10:30:00')
+
+    def test_long_run_skips_missed_slots_without_overlap(self):
+        monitor = Mock()
         starts = []
         def check():
-            starts.append(time.monotonic())
-            if len(starts) == 3:
+            starts.append(self.current)
+            if len(starts) == 1:
+                self.current = datetime(2026, 10, 25, 11, 12)
+            else:
                 self.stop.set()
-        monitor.return_value.run_all.side_effect = check
-        run_service(self.store, Mock(), self.path, 12345, self.stop, interval=0.025)
-        self.assertEqual(len(starts), 3)
-        self.assertGreaterEqual(starts[1] - starts[0], 0.02)
-        self.assertEqual(self.store.get('worker_state'), 'сервис остановлен')
-
-    @patch('ozon_monitor.service.Monitor')
-    def test_owner_commands_are_processed_while_worker_is_blocked(self, monitor):
-        started, changed = threading.Event(), threading.Event()
-        def check():
-            started.set()
-            self.assertTrue(changed.wait(2))
-            self.assertEqual(self.store.snapshot(1)[1], 400)
-            self.stop.set()
-        def poll(poller):
-            if not started.wait(2):
-                self.stop.set()
-                return
-            poller.controller.handle({'message': {'from': {'id': 12345}, 'chat': {'id': 12345}, 'text': '/price 1 400'}})
-            changed.set()
-        monitor.return_value.run_all.side_effect = check
-        with patch('ozon_monitor.service.BotPoller.run', poll):
-            run_service(self.store, Mock(), self.path, 12345, self.stop)
-        self.assertTrue(changed.is_set())
+        monitor.run_all.side_effect = check
+        self.service(monitor)
+        self.assertEqual(starts, [datetime(2026, 10, 25, 10, 30), datetime(2026, 10, 25, 11, 30)])

@@ -47,8 +47,9 @@ class PersistentSettings(unittest.TestCase):
         self.assertEqual(duplicate.price_limit, 800)
 
     def test_pause_cancels_queued_target_check(self):
-        self.store.request_check(1)
+        self.store.request_check(1, immediate=True)
         self.store.enable(1, False)
+        self.assertEqual(self.store.get('check_urgent'), '')
         self.assertEqual(self.store.take_checks(), [])
 
     def test_target_price_changes_do_not_touch_other_target_history(self):
